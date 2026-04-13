@@ -186,19 +186,28 @@ class SessionManager: ObservableObject {
         messages.append(ChatMessage(role: .user, content: input))
         state = .processing
 
-        do {
-            let (response, minutes) = try await parseTimeWithClaude(input)
-            addAssistantMessage(response)
+        // Try Sonnet first, fall back to Haiku if it fails
+        let models = ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
+        var lastError: Error?
 
-            // Brief pause so the user can read the response
-            try await Task.sleep(nanoseconds: 2_500_000_000)
-            startWorkSession(minutes: minutes)
-        } catch {
-            addAssistantMessage(
-                "Sorry, I couldn't understand that. Try something like \"2 hours\" or \"until 10:30 PM\"."
-            )
-            state = .setup
+        for model in models {
+            do {
+                let (response, minutes) = try await parseTimeWithClaude(input, model: model)
+                addAssistantMessage(response)
+
+                // Brief pause so the user can read the response
+                try await Task.sleep(nanoseconds: 2_500_000_000)
+                startWorkSession(minutes: minutes)
+                return
+            } catch {
+                lastError = error
+            }
         }
+
+        addAssistantMessage(
+            "Sorry, I couldn't understand that. Try something like \"2 hours\" or \"until 10:30 PM\".\n\n(Error: \(lastError?.localizedDescription ?? "unknown"))"
+        )
+        state = .setup
     }
 
     // MARK: - Work Session
@@ -372,7 +381,7 @@ class SessionManager: ObservableObject {
 
     // MARK: - Claude API
 
-    private func parseTimeWithClaude(_ input: String) async throws -> (String, Int) {
+    private func parseTimeWithClaude(_ input: String, model: String = "claude-sonnet-4-20250514") async throws -> (String, Int) {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a 'on' EEEE, MMMM d, yyyy"
         let currentTime = formatter.string(from: Date())
@@ -391,7 +400,7 @@ class SessionManager: ObservableObject {
         """
 
         let body: [String: Any] = [
-            "model": "claude-sonnet-4-20250514",
+            "model": model,
             "max_tokens": 200,
             "system": systemPrompt,
             "messages": [["role": "user", "content": input]],
@@ -410,9 +419,10 @@ class SessionManager: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
 
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+            let body = String(data: data, encoding: .utf8) ?? "no body"
             throw NSError(
                 domain: "Respect", code: httpResponse.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "API error (\(httpResponse.statusCode))"]
+                userInfo: [NSLocalizedDescriptionKey: "API \(httpResponse.statusCode): \(body)"]
             )
         }
 
@@ -433,7 +443,9 @@ class SessionManager: ObservableObject {
         guard
             let minutesLine = lines.last(where: { $0.contains("MINUTES:") }),
             let raw = minutesLine.components(separatedBy: "MINUTES:").last,
-            let minutes = Int(raw.trimmingCharacters(in: .whitespaces)),
+            let digits = raw.trimmingCharacters(in: .whitespaces)
+                .components(separatedBy: CharacterSet.decimalDigits.inverted).first,
+            let minutes = Int(digits),
             minutes > 0
         else {
             throw NSError(
