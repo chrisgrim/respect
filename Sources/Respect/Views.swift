@@ -266,9 +266,9 @@ struct ChatView: View {
                 inputFocused = true
             }
         }
-        .onChange(of: session.spacebarTranscript) { newValue in
-            if !newValue.isEmpty {
-                userInput = newValue
+        .onReceive(session.$spacebarTranscript) { value in
+            if !value.isEmpty {
+                userInput = value
                 session.spacebarTranscript = ""
             }
         }

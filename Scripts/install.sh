@@ -27,9 +27,7 @@ cat > "$PLIST" << 'EOF'
     <string>com.respect.timer</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/open</string>
-        <string>-a</string>
-        <string>/Applications/Respect.app</string>
+        <string>/Applications/Respect.app/Contents/MacOS/Respect</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -37,10 +35,15 @@ cat > "$PLIST" << 'EOF'
     <dict>
         <key>Crashed</key>
         <true/>
+        <key>SuccessfulExit</key>
+        <false/>
     </dict>
 </dict>
 </plist>
 EOF
+
+# Remove the local build artifact — only run from /Applications
+rm -rf Respect.app
 
 # Load the agent
 launchctl unload "$PLIST" 2>/dev/null || true

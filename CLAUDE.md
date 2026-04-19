@@ -21,6 +21,16 @@ open Respect.app             # Run locally
 bash Scripts/install.sh      # Install to /Applications + LaunchAgent
 ```
 
+## Logging
+
+- Uses `os.Logger` (subsystem `com.respect.timer`) for system console logs
+- Also writes to `~/.config/respect/respect.log` with timestamps for easy sharing
+- `log` (Logger) and `logToFile()` are defined in SessionManager.swift and available project-wide
+- Key events logged: state transitions, lock/unlock, window management, API calls, errors
+- To read logs: `cat ~/.config/respect/respect.log`
+- To tail live: `tail -f ~/.config/respect/respect.log`
+- To clear: `rm ~/.config/respect/respect.log`
+
 ## Key Details
 
 - API key stored at `~/.config/respect/api_key` (not in repo)

@@ -1,5 +1,12 @@
 import SwiftUI
 import AppKit
+import os.log
+
+// Borderless window that accepts keyboard input
+class KeyableWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
 
 @main
 struct RespectApp: App {
@@ -16,10 +23,12 @@ struct RespectApp: App {
                     if let window = NSApplication.shared.windows.first {
                         window.title = "Respect"
                         appDelegate.mainWindow = window
-                        // Go full screen on launch
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            window.toggleFullScreen(nil)
-                        }
+                        // Hide the main window — we use overlay windows instead
+                        window.orderOut(nil)
+                    }
+                    // Show the setup overlay on launch
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        NotificationCenter.default.post(name: .showSetupScreen, object: session)
                     }
                 }
         }
@@ -41,6 +50,11 @@ struct RespectApp: App {
                     NSApplication.shared.terminate(nil)
                 }
             }
+            Divider()
+            Button("⚠️ Emergency Quit") {
+                NSApplication.shared.terminate(nil)
+            }
+            .keyboardShortcut("Q", modifiers: [.command, .shift, .option])
         } label: {
             if session.state == .working && session.timeRemaining <= 600 {
                 Text(session.formattedTimeRemaining)
@@ -52,14 +66,19 @@ struct RespectApp: App {
     }
 }
 
-// MARK: - App Delegate (manages lock window)
+// MARK: - App Delegate (manages overlay windows)
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var session: SessionManager?
     var lockWindows: [NSWindow] = []
-    weak var mainWindow: NSWindow?
+    var setupWindows: [NSWindow] = []
+    var mainWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        log.info("applicationDidFinishLaunching")
+        logToFile("applicationDidFinishLaunching")
+        NSApplication.shared.setActivationPolicy(.accessory)
+
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleShowLock(_:)),
             name: .showLockScreen, object: nil
@@ -67,6 +86,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(handleHideLock),
             name: .hideLockScreen, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleShowSetup(_:)),
+            name: .showSetupScreen, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleHideSetup),
+            name: .hideSetupScreen, object: nil
+        )
+
+        // Detect user switching away — cancel timers so it doesn't lock from another account
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(sessionDidResignActive),
+            name: NSWorkspace.sessionDidResignActiveNotification, object: nil
         )
 
         // Detect user switching back (fast user switch)
@@ -83,42 +116,99 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    @objc func sessionDidResignActive() {
+        log.info("sessionDidResignActive — user switched away")
+        logToFile("sessionDidResignActive — user switched away, cancelling session")
+        Task { @MainActor in
+            session?.cancelSession()
+        }
+    }
+
     @objc func screenUnlocked() {
+        log.info("screenUnlocked notification received")
+        logToFile("screenUnlocked notification received")
         showSetupScreen()
     }
 
     @objc func sessionDidBecomeActive() {
+        log.info("sessionDidBecomeActive notification received")
+        logToFile("sessionDidBecomeActive notification received")
         showSetupScreen()
     }
 
     private func showSetupScreen() {
         Task { @MainActor in
-            guard let session, let mainWindow else { return }
-
-            // Always reset and show setup when switching back to this user
-            session.resetForNewSession()
-
-            NSApplication.shared.unhide(nil)
-            mainWindow.makeKeyAndOrderFront(nil)
-            NSApplication.shared.activate(ignoringOtherApps: true)
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if !mainWindow.styleMask.contains(.fullScreen) {
-                    mainWindow.toggleFullScreen(nil)
-                }
+            guard let session else {
+                logToFile("showSetupScreen: no session")
+                return
             }
+            // Only show setup if not already working
+            guard session.state != .working else {
+                logToFile("showSetupScreen: skipped (state is working)")
+                return
+            }
+            session.resetForNewSession()
+            NotificationCenter.default.post(name: .showSetupScreen, object: session)
         }
     }
 
-    @objc func handleShowLock(_ notification: Notification) {
-        guard let session = notification.object as? SessionManager else { return }
+    // MARK: - Setup Overlay
 
-        // Hide all existing app windows
-        for window in NSApplication.shared.windows {
-            if !lockWindows.contains(window) {
-                window.orderOut(nil)
+    @objc func handleShowSetup(_ notification: Notification) {
+        guard let session = notification.object as? SessionManager else {
+            logToFile("handleShowSetup: no session in notification")
+            return
+        }
+        logToFile("handleShowSetup: creating setup windows on \(NSScreen.screens.count) screens")
+
+        // Close any existing setup windows
+        for window in setupWindows { window.close() }
+        setupWindows.removeAll()
+
+        let setupView = ContentView().environmentObject(session)
+
+        for (index, screen) in NSScreen.screens.enumerated() {
+            let window = KeyableWindow(
+                contentRect: screen.frame,
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.level = .screenSaver
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            window.isReleasedWhenClosed = false
+            window.backgroundColor = NSColor.white
+            window.contentView = NSHostingView(rootView: setupView)
+            window.setFrame(screen.frame, display: true)
+            window.makeKeyAndOrderFront(nil)
+            setupWindows.append(window)
+
+            // Only the first screen's window needs to be key (for keyboard input)
+            if index == 0 {
+                window.makeKey()
             }
         }
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    @objc func handleHideSetup() {
+        logToFile("handleHideSetup: closing \(self.setupWindows.count) setup windows")
+        for window in setupWindows {
+            window.close()
+        }
+        setupWindows.removeAll()
+    }
+
+    // MARK: - Lock Overlay
+
+    @objc func handleShowLock(_ notification: Notification) {
+        guard let session = notification.object as? SessionManager else {
+            logToFile("handleShowLock: no session in notification")
+            return
+        }
+        log.info("handleShowLock: creating lock windows on \(NSScreen.screens.count) screens")
+        logToFile("handleShowLock: creating lock windows on \(NSScreen.screens.count) screens")
 
         // Create a lock window on every screen
         let lockView = LockScreenView().environmentObject(session)
@@ -144,43 +234,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func handleHideLock() {
+        log.info("handleHideLock: closing \(self.lockWindows.count) lock windows")
+        logToFile("handleHideLock: closing \(self.lockWindows.count) lock windows")
         for window in lockWindows {
             window.close()
         }
         lockWindows.removeAll()
-
-        // Re-show the main window and go full screen
-        guard let mainWindow = self.mainWindow else { return }
-
-        NSApplication.shared.unhide(nil)
-        mainWindow.makeKeyAndOrderFront(nil)
-        NSApplication.shared.activate(ignoringOtherApps: true)
-
-        // Give the window time to fully appear before toggling full screen
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            if !mainWindow.styleMask.contains(.fullScreen) {
-                mainWindow.toggleFullScreen(nil)
-            }
-        }
     }
+
+    // MARK: - App Lifecycle
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if session?.state == .locked {
+            log.info("applicationShouldTerminate: DENIED (locked)")
+            logToFile("applicationShouldTerminate: DENIED (state is locked)")
             return .terminateCancel
         }
+        log.info("applicationShouldTerminate: allowed")
+        logToFile("applicationShouldTerminate: allowed (state=\(String(describing: self.session?.state)))")
         return .terminateNow
     }
 
-    // Hide instead of quit when the window close button is clicked
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if let mainWindow {
-            mainWindow.makeKeyAndOrderFront(nil)
-            NSApplication.shared.activate(ignoringOtherApps: true)
-        }
-        return false
-    }
-
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return false // Keep running in menu bar
+        return false
     }
 }

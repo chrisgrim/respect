@@ -3,6 +3,25 @@ import SwiftUI
 import UserNotifications
 import IOKit.pwr_mgt
 import Combine
+import os.log
+
+let log = Logger(subsystem: "com.respect.timer", category: "app")
+
+/// Appends timestamped entries to ~/.config/respect/respect.log
+func logToFile(_ message: String) {
+    let dir = (("~/.config/respect") as NSString).expandingTildeInPath
+    let path = dir + "/respect.log"
+    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let line = "[\(timestamp)] \(message)\n"
+    if let handle = FileHandle(forWritingAtPath: path) {
+        handle.seekToEndOfFile()
+        handle.write(line.data(using: .utf8)!)
+        handle.closeFile()
+    } else {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? line.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
 
 // MARK: - Data Types
 
@@ -27,6 +46,8 @@ enum AppState: Equatable {
 extension Notification.Name {
     static let showLockScreen = Notification.Name("showLockScreen")
     static let hideLockScreen = Notification.Name("hideLockScreen")
+    static let showSetupScreen = Notification.Name("showSetupScreen")
+    static let hideSetupScreen = Notification.Name("hideSetupScreen")
 }
 
 // MARK: - Session Manager
@@ -80,11 +101,17 @@ class SessionManager: ObservableObject {
     // MARK: - Init
 
     init() {
+        log.info("SessionManager.init")
+        logToFile("SessionManager.init")
         loadApiKey()
         if apiKey.isEmpty {
             state = .apiKeyNeeded
+            log.info("State → apiKeyNeeded")
+            logToFile("State → apiKeyNeeded")
         } else {
             state = .setup
+            log.info("State → setup (has API key)")
+            logToFile("State → setup (has API key)")
             addAssistantMessage("Take a moment Chris. Have you spoken to Lucy and told her you are doing this? She is okay with it as long as she knows.\n\nHow long are you working for today?")
         }
         requestNotificationPermission()
@@ -140,12 +167,17 @@ class SessionManager: ObservableObject {
                 holdTimer = nil
 
                 let isRecording = MainActor.assumeIsolated { self.speech.isRecording }
+                logToFile("Spacebar released: isRecording=\(isRecording)")
                 if isRecording {
                     MainActor.assumeIsolated {
-                        self.speech.stopRecording()
                         let text = self.speech.transcript.trimmingCharacters(in: .whitespaces)
+                        logToFile("Spacebar: transcript = '\(text)'")
+                        self.speech.stopRecording()
                         if !text.isEmpty {
-                            self.spacebarTranscript = text
+                            logToFile("Spacebar: auto-submitting '\(text)'")
+                            Task { await self.handleUserInput(text) }
+                        } else {
+                            logToFile("Spacebar: transcript was EMPTY, not submitting")
                         }
                     }
                     return nil
@@ -183,8 +215,15 @@ class SessionManager: ObservableObject {
     // MARK: - User Input
 
     func handleUserInput(_ input: String) async {
+        log.info("handleUserInput: \(input)")
+        logToFile("handleUserInput: \(input)")
         messages.append(ChatMessage(role: .user, content: input))
         state = .processing
+
+        // Build conversation history for multi-turn clarification
+        let conversationMessages = messages.map { msg -> [String: String] in
+            ["role": msg.role == .user ? "user" : "assistant", "content": msg.content]
+        }
 
         // Try Sonnet first, fall back to Haiku if it fails
         let models = ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
@@ -192,14 +231,27 @@ class SessionManager: ObservableObject {
 
         for model in models {
             do {
-                let (response, minutes) = try await parseTimeWithClaude(input, model: model)
+                log.info("Trying model: \(model)")
+                logToFile("Trying model: \(model)")
+                let (response, minutes) = try await parseTimeWithClaude(conversationMessages, model: model)
+                log.info("Parsed \(minutes) minutes from input")
+                logToFile("Parsed \(minutes) minutes from input")
                 addAssistantMessage(response)
+
+                if minutes == 0 {
+                    // Claude is asking for clarification — return to setup for more input
+                    logToFile("MINUTES:0 — clarification needed, returning to setup")
+                    state = .setup
+                    return
+                }
 
                 // Brief pause so the user can read the response
                 try await Task.sleep(nanoseconds: 2_500_000_000)
                 startWorkSession(minutes: minutes)
                 return
             } catch {
+                log.error("Model \(model) failed: \(error.localizedDescription)")
+                logToFile("Model \(model) failed: \(error.localizedDescription)")
                 lastError = error
             }
         }
@@ -213,17 +265,22 @@ class SessionManager: ObservableObject {
     // MARK: - Work Session
 
     private func startWorkSession(minutes: Int) {
+        log.info("startWorkSession: \(minutes) minutes")
+        logToFile("startWorkSession: \(minutes) minutes")
         endTime = Date().addingTimeInterval(Double(minutes) * 60)
         warningShown = false
         state = .working
+        logToFile("State → working, endTime=\(self.endTime?.description ?? "nil")")
         preventSleep()
 
-        // Exit full screen and hide the app so the user can work
+        // Dismiss the setup overlay
+        NotificationCenter.default.post(name: .hideSetupScreen, object: nil)
+
+        // Hide the app so the user can work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             if let window = NSApplication.shared.windows.first {
                 if window.styleMask.contains(.fullScreen) {
                     window.toggleFullScreen(nil)
-                    // Wait for the full-screen animation to finish, then hide
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                         NSApplication.shared.hide(nil)
                     }
@@ -257,6 +314,8 @@ class SessionManager: ObservableObject {
     // MARK: - Warning
 
     private func showWarning() {
+        log.info("showWarning: 10 minutes remaining")
+        logToFile("showWarning: 10 minutes remaining")
         let content = UNMutableNotificationContent()
         content.title = "Respect"
         content.body = "You have 10 minutes left! Start wrapping up."
@@ -280,10 +339,13 @@ class SessionManager: ObservableObject {
     // MARK: - Lock Screen
 
     func lockScreen() {
+        log.info("lockScreen called")
+        logToFile("lockScreen called")
         workTimer?.invalidate()
         allowSleep()
         state = .locked
         lockEndTime = Date().addingTimeInterval(120) // 2 minutes
+        logToFile("State → locked, lockEndTime=\(self.lockEndTime?.description ?? "nil")")
 
         NotificationCenter.default.post(name: .showLockScreen, object: self)
 
@@ -304,6 +366,8 @@ class SessionManager: ObservableObject {
     }
 
     func unlock() {
+        log.info("unlock called")
+        logToFile("unlock called")
         lockTimer?.invalidate()
         workTimer?.invalidate()
         state = .setup
@@ -311,12 +375,17 @@ class SessionManager: ObservableObject {
         endTime = nil
         lockEndTime = nil
         warningShown = false
+        logToFile("State → setup (unlock)")
         addAssistantMessage("Welcome back! How long are you working for this time?")
 
         NotificationCenter.default.post(name: .hideLockScreen, object: nil)
+        NotificationCenter.default.post(name: .showSetupScreen, object: self)
+        logToFile("Posted hideLockScreen + showSetupScreen")
     }
 
     private func logOut() {
+        log.info("logOut called — locking Mac screen")
+        logToFile("logOut called — locking Mac screen")
         // Dismiss the lock overlay first
         NotificationCenter.default.post(name: .hideLockScreen, object: nil)
 
@@ -332,14 +401,18 @@ class SessionManager: ObservableObject {
     }
 
     func lockOutNow() {
+        log.info("lockOutNow called")
+        logToFile("lockOutNow called")
         lockTimer?.invalidate()
         NotificationCenter.default.post(name: .hideLockScreen, object: nil)
         logOut()
     }
 
-    // MARK: - Reset
+    // MARK: - Cancel (user switched away)
 
-    func resetForNewSession() {
+    func cancelSession() {
+        log.info("cancelSession called")
+        logToFile("cancelSession called — stopping timers, closing overlays")
         workTimer?.invalidate()
         lockTimer?.invalidate()
         allowSleep()
@@ -348,6 +421,25 @@ class SessionManager: ObservableObject {
         endTime = nil
         lockEndTime = nil
         warningShown = false
+        // Close all overlays — user is leaving this account
+        NotificationCenter.default.post(name: .hideLockScreen, object: nil)
+        NotificationCenter.default.post(name: .hideSetupScreen, object: nil)
+    }
+
+    // MARK: - Reset
+
+    func resetForNewSession() {
+        log.info("resetForNewSession called")
+        logToFile("resetForNewSession called")
+        workTimer?.invalidate()
+        lockTimer?.invalidate()
+        allowSleep()
+        state = .setup
+        messages = []
+        endTime = nil
+        lockEndTime = nil
+        warningShown = false
+        logToFile("State → setup (resetForNewSession)")
         addAssistantMessage("Take a moment Chris. Have you spoken to Lucy and told her you are doing this? She is okay with it as long as she knows.\n\nHow long are you working for today?")
     }
 
@@ -381,7 +473,7 @@ class SessionManager: ObservableObject {
 
     // MARK: - Claude API
 
-    private func parseTimeWithClaude(_ input: String, model: String = "claude-sonnet-4-20250514") async throws -> (String, Int) {
+    private func parseTimeWithClaude(_ conversationMessages: [[String: String]], model: String = "claude-sonnet-4-20250514") async throws -> (String, Int) {
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a 'on' EEEE, MMMM d, yyyy"
         let currentTime = formatter.string(from: Date())
@@ -403,7 +495,7 @@ class SessionManager: ObservableObject {
             "model": model,
             "max_tokens": 200,
             "system": systemPrompt,
-            "messages": [["role": "user", "content": input]],
+            "messages": conversationMessages,
         ]
 
         let jsonData = try JSONSerialization.data(withJSONObject: body)
@@ -439,15 +531,17 @@ class SessionManager: ObservableObject {
         }
 
         // Parse MINUTES:X from the last line
+        logToFile("API response text: \(text)")
         let lines = text.components(separatedBy: "\n")
         guard
             let minutesLine = lines.last(where: { $0.contains("MINUTES:") }),
             let raw = minutesLine.components(separatedBy: "MINUTES:").last,
             let digits = raw.trimmingCharacters(in: .whitespaces)
                 .components(separatedBy: CharacterSet.decimalDigits.inverted).first,
-            let minutes = Int(digits),
-            minutes > 0
+            let minutes = Int(digits)
         else {
+            let minutesLine = lines.last(where: { $0.contains("MINUTES:") }) ?? "(no MINUTES line found)"
+            logToFile("Parse failed. MINUTES line: \(minutesLine)")
             throw NSError(
                 domain: "Respect", code: 2,
                 userInfo: [NSLocalizedDescriptionKey: "Could not parse time"]
