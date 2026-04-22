@@ -474,21 +474,68 @@ struct WorkingView: View {
 
             Spacer()
 
-            Button(action: { session.lockScreen() }) {
-                Text("End Session Early")
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundColor(foggy)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color(white: 0.82), lineWidth: 1)
-                    )
+            VStack(spacing: 14) {
+                HStack(spacing: 12) {
+                    QuickActionButton(icon: "plus", label: "10 min") {
+                        session.extendSession(minutes: 10)
+                    }
+                    QuickActionButton(icon: "plus", label: "1 hour") {
+                        session.extendSession(minutes: 60)
+                    }
+                    QuickActionButton(icon: "arrow.counterclockwise", label: "Restart Timer") {
+                        session.restartTimer()
+                    }
+                }
+
+                Button(action: { session.lockScreen() }) {
+                    Text("End Session Early")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundColor(foggy)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color(white: 0.82), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             .padding(.bottom, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Quick Action Button (used on working screen)
+
+struct QuickActionButton: View {
+    let icon: String
+    let label: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(label)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+            }
+            .foregroundColor(hovering ? rausch : hof)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(hovering ? rausch.opacity(0.08) : Color.white)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(hovering ? rausch.opacity(0.4) : Color(white: 0.82), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 

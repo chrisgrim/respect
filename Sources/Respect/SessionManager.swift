@@ -408,6 +408,42 @@ class SessionManager: ObservableObject {
         logOut()
     }
 
+    // MARK: - Extend / Restart
+
+    func extendSession(minutes: Int) {
+        guard state == .working, let endTime else { return }
+        log.info("extendSession: +\(minutes) minutes")
+        logToFile("extendSession: +\(minutes) minutes")
+        let newEndTime = endTime.addingTimeInterval(Double(minutes) * 60)
+        self.endTime = newEndTime
+        timeRemaining = newEndTime.timeIntervalSinceNow
+        // If we're now beyond the 10-minute warning window, allow it to fire again later
+        if timeRemaining > 600 {
+            warningShown = false
+        }
+        // Hide the app so the user can get back to work
+        NSApplication.shared.hide(nil)
+    }
+
+    func restartTimer() {
+        log.info("restartTimer called — returning to setup")
+        logToFile("restartTimer called — returning to setup")
+        workTimer?.invalidate()
+        allowSleep()
+        state = .setup
+        messages = []
+        endTime = nil
+        timeRemaining = 0
+        warningShown = false
+        addAssistantMessage("How long are you working for this time?")
+
+        // Hide the main window and show the fullscreen setup overlay
+        if let window = NSApplication.shared.windows.first {
+            window.orderOut(nil)
+        }
+        NotificationCenter.default.post(name: .showSetupScreen, object: self)
+    }
+
     // MARK: - Cancel (user switched away)
 
     func cancelSession() {
