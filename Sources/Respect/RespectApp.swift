@@ -8,6 +8,22 @@ class KeyableWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
+// Unload the LaunchAgent so launchd won't relaunch us, then exit.
+// Uses exit(0) to bypass applicationShouldTerminate — Emergency Quit must
+// work even from the locked state.
+func emergencyQuit() {
+    log.info("emergencyQuit called")
+    logToFile("emergencyQuit: unloading LaunchAgent and exiting")
+    let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/com.respect.timer.plist"
+    let task = Process()
+    task.launchPath = "/bin/launchctl"
+    task.arguments = ["unload", plistPath]
+    try? task.run()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        exit(0)
+    }
+}
+
 @main
 struct RespectApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -52,11 +68,11 @@ struct RespectApp: App {
             }
             Divider()
             Button("⚠️ Emergency Quit") {
-                NSApplication.shared.terminate(nil)
+                emergencyQuit()
             }
             .keyboardShortcut("Q", modifiers: [.command, .shift, .option])
         } label: {
-            if session.state == .working && session.timeRemaining <= 600 {
+            if session.state == .working {
                 Text(session.formattedTimeRemaining)
                     .monospacedDigit()
             } else {

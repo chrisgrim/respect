@@ -41,6 +41,38 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(.light)
+        // Emergency Quit is not shown on the lock screen — that overlay is
+        // managed separately by AppDelegate and never routes through ContentView.
+        .overlay(alignment: .topTrailing) {
+            EmergencyQuitButton()
+                .padding(16)
+        }
+    }
+}
+
+// MARK: - Emergency Quit Button (shown on full-screen overlays)
+
+struct EmergencyQuitButton: View {
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: { emergencyQuit() }) {
+            HStack(spacing: 6) {
+                Image(systemName: "power")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Emergency Quit")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+            }
+            .foregroundColor(hovering ? rausch : foggy.opacity(0.55))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(hovering ? rausch.opacity(0.08) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 

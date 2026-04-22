@@ -32,12 +32,9 @@ cat > "$PLIST" << 'EOF'
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <dict>
-        <key>Crashed</key>
-        <true/>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
 </dict>
 </plist>
 EOF
