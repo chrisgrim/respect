@@ -304,8 +304,11 @@ struct ChatView: View {
                 session.spacebarTranscript = ""
             }
         }
-        .onChange(of: session.submitRequested) { _ in
-            if session.submitRequested {
+        // Act on the delivered value, not session.submitRequested: two ChatView
+        // instances exist during setup (hidden main window + overlay), and the
+        // first handler to run resets the flag before the other sees it.
+        .onChange(of: session.submitRequested) { newValue in
+            if newValue {
                 session.submitRequested = false
                 sendMessage()
             }
