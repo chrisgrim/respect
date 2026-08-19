@@ -54,6 +54,10 @@ struct RespectApp: App {
             if session.state == .working {
                 Text("Time remaining: \(session.formattedTimeRemaining)")
                 Divider()
+                Button("+1 Hour") { session.extendSession(minutes: 60) }
+                Button("+2 Hours") { session.extendSession(minutes: 120) }
+                Button("+4 Hours") { session.extendSession(minutes: 240) }
+                Divider()
                 Button("End Session Early") { session.lockScreen() }
                 Divider()
             }
